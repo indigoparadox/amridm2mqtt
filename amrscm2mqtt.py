@@ -97,7 +97,7 @@ def main():
             str( flds['Message']['ID'] ) not in watched_meters:
                 continue
 
-            logger.info( 'found reading from meter: %d', flds['Message']['ID'] )
+            logger.debug( 'found reading from meter: %s', flds )
     
             # get some required info: current meter reading, 
             # current interval id, most recent interval
