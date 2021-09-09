@@ -20,6 +20,7 @@ import logging
 import ssl
 import json
 from paho.mqtt import client as mqtt_client
+from datetime import datetime
 
 # uses signal to shutdown and hard kill opened processes and self
 def shutdown( signum, frame ):
@@ -85,7 +86,7 @@ def main():
         ['/usr/local/bin/rtlamr', '-msgtype=scm', '-format=json'],
         stdout=subprocess.PIPE )
 
-    last_reading = None
+    prev_flds = None
     
     while True:
         try:
@@ -114,7 +115,7 @@ def main():
                 
             if prev_flds and \
             prev_flds['Message']['Consumption'] < flds['Message']['Consumption']:
-                kwh_diff = flds['Message']['Consumption'] - prev_flds['Message']['Consumption']:
+                kwh_diff = flds['Message']['Consumption'] - prev_flds['Message']['Consumption']
                 time_diff = flds['Timestamp'] - prev_flds['Timestamp']
                 hours_diff = time_diff.total_seconds() / 3600
                 meter_rate = kwh_diff / hours_diff
