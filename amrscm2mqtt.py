@@ -19,6 +19,7 @@ import configparser
 import logging
 import ssl
 import json
+import argparse
 from paho.mqtt import client as mqtt_client
 from datetime import datetime
 
@@ -32,24 +33,29 @@ def on_connected( client, userdata, flags, rc ):
     logger = logging.getLogger( 'mqtt' )
     logger.info( 'mqtt connected' )
 
+#def on_message(client, userdata, msg):
+#    logger = logging.getLogger( 'mqtt' )
+#    logger.debug( 'message: %s: %s', msg.topic, msg.payload )
+
 def stop( client ):
     logger = logging.getLogger( 'mqtt' )
     logger.info( 'mqtt shutting down...' )
     client.disconnect()
     client.loop_stop()
     
-def send_mqtt( client, topic, payload ):
+def send_mqtt( client, topic, payload, retain=False ):
     logger = logging.getLogger( 'mqtt' )
     logger.debug( 'publishing %s to %s...', payload, topic )
     try:
-        client.publish( topic, payload )
+        client.publish( topic, payload, retain=retain )
     except Exception as ex:
         logger.exception( ex )
 
-def client_connect( client, config ):
+def client_connect( client, config, verbose=False ):
     logger = logging.getLogger( 'mqtt' )
     client.loop_start()
-    client.enable_logger()
+    if verbose:
+        client.enable_logger()
     client.tls_set( config['mqtt']['ca'], tls_version=ssl.PROTOCOL_TLSv1_2 )
     client.on_connect = on_connected
     logger.info( 'connecting to MQTT at %s:%d...',
@@ -58,13 +64,35 @@ def client_connect( client, config ):
         config['mqtt']['user'], config['mqtt']['password'] )
     client.connect( config['mqtt']['host'], config.getint( 'mqtt', 'port' ) )
 
-def main():
+def save_last_reading_change( config, config_path, flds ):
+    global prev_flds
+    logger = logging.getLogger( 'config' )
+    prev_flds = flds
+    config['persist']['reading'] = '{}'.format( flds['Message']['Consumption'] )
+    logger.debug( 'saving last reading to config...' )
+    try:
+        with open( config_path, 'w' ) as config_file:
+            config.write( config_file )
+    except Exception as ex:
+        logger.exception( ex )
 
-    logging.basicConfig( level=logging.INFO )
+def main():
+    
+    global prev_flds
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument( '-c', '--config-file', default='/etc/amrscm2mqtt.ini' )
+
+    parser.add_argument( '-v', '--verbose', action='store_true' )
+
+    args = parser.parse_args()
+
+    logging.basicConfig( level=logging.DEBUG if args.verbose else logging.INFO )
     logger = logging.getLogger( 'main' )
 
     config = configparser.RawConfigParser()
-    config.read( '/etc/amrscm2mqtt.ini' )
+    config.read( args.config_file )
     watched_meters = config['meter']['ids'].split( ',' )
     
     signal.signal( signal.SIGTERM, shutdown )
@@ -87,6 +115,7 @@ def main():
         stdout=subprocess.PIPE )
 
     prev_flds = None
+    rate_updated_once = False # Protect against bad rate data.
     
     while True:
         try:
@@ -94,50 +123,70 @@ def main():
             # remove whitespace and convert to string
             amrline = rtlamr.stdout.readline().strip().decode()
 
-            # make sure the meter id is one we want
+            # Make sure the meter id is one we want.
             flds = json.loads( amrline )
             if len( watched_meters ) and \
             str( flds['Message']['ID'] ) not in watched_meters:
                 continue
 
             logger.debug( 'found reading from meter: %s', flds )
-    
-            # get some required info: current meter reading, 
-            # current interval id, most recent interval
-            #read_cur = flds['Message']['Consumption']
-    
-            #current_reading_in_kwh = \
-            #    (read_cur * config.getint( 'meter', 'multiplier' ) / 1000)
 
             # Convert timestamp to native object for calculations later.
             flds['Timestamp'] = datetime.strptime(
                 flds['Time'].split( '.' )[0], '%Y-%m-%dT%H:%M:%S' )
                 
+            # Check for counter reset.
+            if config.getint( 'persist', 'reading' ) > flds['Message']['Consumption']:
+                logger.info( 'counter was reset' )
+                send_mqtt(
+                    client,
+                    '{}/{}/meter_reading_reset'.format( config['mqtt']['topic'], flds['Message']['ID'] ),
+                    datetime.now().isoformat(),
+                    retain=True )
+
             if prev_flds and \
-            prev_flds['Message']['Consumption'] < flds['Message']['Consumption']:
+            prev_flds['Message']['Consumption'] < flds['Message']['Consumption'] and \
+            rate_updated_once:
                 kwh_diff = flds['Message']['Consumption'] - prev_flds['Message']['Consumption']
                 time_diff = flds['Timestamp'] - prev_flds['Timestamp']
                 hours_diff = time_diff.total_seconds() / 3600
                 meter_rate = kwh_diff / hours_diff
                 send_mqtt(
                     client,
-                    'amrscm/{}/meter_rate'.format( flds['Message']['ID'] ),
+                    '{}/{}/meter_rate'.format( config['mqtt']['topic'], flds['Message']['ID'] ),
                     '{}'.format( meter_rate ) )
+                send_mqtt(
+                    client,
+                    '{}/{}/meter_rate_updated'.format( config['mqtt']['topic'], flds['Message']['ID'] ),
+                    datetime.now().isoformat() )
 
                 # Store last reading for later.
-                prev_flds = flds
+                save_last_reading_change( config, args.config_file, flds )
+            
+            if prev_flds and \
+            prev_flds['Message']['Consumption'] < flds['Message']['Consumption'] and \
+            not rate_updated_once:
+
+                rate_updated_once = True
+
+                # Store last reading for later.
+                save_last_reading_change( config, args.config_file, flds )
     
             elif not prev_flds:
                 # Store last reading for later.
-                prev_flds = flds
+                save_last_reading_change( config, args.config_file, flds )
     
             send_mqtt(
                 client,
-                'amrscm/{}/meter_reading'.format( flds['Message']['ID'] ),
+                '{}/{}/meter_reading'.format( config['mqtt']['topic'], flds['Message']['ID'] ),
                 '{}'.format( flds['Message']['Consumption'] ) )
+            send_mqtt(
+                client,
+                '{}/{}/meter_reading_updated'.format( config['mqtt']['topic'], flds['Message']['ID'] ),
+                datetime.now().isoformat() )
     
         except Exception as e:
-            logger.exception( e )
+            logger.exception( e )   
             time.sleep( 2 )
 
 if '__main__' == __name__:
