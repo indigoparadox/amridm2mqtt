@@ -84,6 +84,8 @@ def main():
     rtlamr = subprocess.Popen(
         ['/usr/local/bin/rtlamr', '-msgtype=scm', '-format=json'],
         stdout=subprocess.PIPE )
+
+    last_reading = None
     
     while True:
         try:
@@ -101,15 +103,37 @@ def main():
     
             # get some required info: current meter reading, 
             # current interval id, most recent interval
-            read_cur = flds['Message']['Consumption']
+            #read_cur = flds['Message']['Consumption']
     
-            current_reading_in_kwh = \
-                (read_cur * config.getint( 'meter', 'multiplier' ) / 1000)
+            #current_reading_in_kwh = \
+            #    (read_cur * config.getint( 'meter', 'multiplier' ) / 1000)
+
+            # Convert timestamp to native object for calculations later.
+            flds['Timestamp'] = datetime.strptime(
+                flds['Time'].split( '.' )[0], '%Y-%m-%dT%H:%M:%S' )
+                
+            if prev_flds and \
+            prev_flds['Message']['Consumption'] < flds['Message']['Consumption']:
+                kwh_diff = flds['Message']['Consumption'] - prev_flds['Message']['Consumption']:
+                time_diff = flds['Timestamp'] - prev_flds['Timestamp']
+                hours_diff = time_diff.total_seconds() / 3600
+                meter_rate = kwh_diff / hours_diff
+                send_mqtt(
+                    client,
+                    'amrscm/{}/meter_rate'.format( flds['Message']['ID'] ),
+                    '{}'.format( meter_rate ) )
+
+                # Store last reading for later.
+                prev_flds = flds
+    
+            elif not prev_flds:
+                # Store last reading for later.
+                prev_flds = flds
     
             send_mqtt(
                 client,
                 'amrscm/{}/meter_reading'.format( flds['Message']['ID'] ),
-                '{}'.format( current_reading_in_kwh ) )
+                '{}'.format( flds['Message']['Consumption'] ) )
     
         except Exception as e:
             logger.exception( e )
