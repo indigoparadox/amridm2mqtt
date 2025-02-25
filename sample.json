@@ -1,0 +1,14 @@
+{
+    "Time":"2021-09-08T12:32:22.555078168-04:00",
+    "Offset":0,
+    "Length":0,
+    "Type":"SCM",
+    "Message":{
+        "ID":28097437,
+        "Type":4,
+        "TamperPhy":0,
+        "TamperEnc":1,
+        "Consumption":50233,
+        "ChecksumVal":16067
+    }
+}
